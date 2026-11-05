@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Crypto Bot</title>
+<style>
+:root{--bg:#0b0f14;--card:#141a22;--line:#222b36;--text:#e8edf3;--dim:#8794a3;--buy:#22c55e;--wait:#e0a82e;--avoid:#ef4444}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  padding:max(16px,env(safe-area-inset-top)) 14px max(24px,env(safe-area-inset-bottom))}
+header{display:flex;justify-content:space-between;align-items:baseline;margin:4px 2px 12px}
+h1{font-size:20px;margin:0}
+#status{color:var(--dim);font-size:12.5px;text-align:right}
+button[hidden]{display:none}
+#install{width:100%;margin-bottom:12px;padding:12px;border-radius:12px;border:1px solid var(--buy);background:rgba(34,197,94,.12);color:var(--buy);font:600 15px system-ui}
+.add{display:flex;gap:8px}
+.add input{flex:1;min-width:0;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:16px system-ui;text-transform:uppercase}
+.add input::placeholder{text-transform:none;color:var(--dim)}
+.add button{padding:0 18px;border-radius:12px;border:1px solid var(--buy);background:rgba(34,197,94,.12);color:var(--buy);font:600 15px system-ui}
+#msg{color:var(--dim);font-size:12.5px;min-height:18px;margin:6px 4px 8px}
+.stats{display:flex;gap:8px;margin-bottom:12px}
+.stat{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.stat b{display:block;font-size:17px;margin-top:2px}
+.stat span{color:var(--dim);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px}
+.card.BUY{border-color:var(--buy)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.right{display:flex;align-items:center;gap:8px}
+.coin{font-weight:700;font-size:16px}
+.price{font-size:22px;font-weight:700;margin:4px 0 2px;font-variant-numeric:tabular-nums}
+.badge{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+.badge.BUY{background:rgba(34,197,94,.15);color:var(--buy);border-color:var(--buy)}
+.badge.WAIT{color:var(--wait);border-color:var(--wait)}
+.badge.AVOID{color:var(--avoid);border-color:var(--avoid)}
+.rm{background:none;border:none;color:var(--dim);font-size:16px;padding:4px 6px}
+.meta{color:var(--dim);font-size:12.5px;display:flex;gap:12px;flex-wrap:wrap}
+.bar{height:6px;background:var(--line);border-radius:3px;margin:10px 0 8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--wait)}
+.card.BUY .bar i{background:var(--buy)}.card.AVOID .bar i{background:var(--avoid)}
+.src{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin-top:8px;font-size:12.5px}
+.src div{display:flex;justify-content:space-between;color:var(--dim)}
+.src div.ok b{color:var(--text);font-weight:600}
+.src div.miss b{opacity:.4}
+footer{color:var(--dim);font-size:11.5px;margin:14px 4px 0;text-align:center}
+</style></head><body>
+<header><h1>Crypto Bot</h1><div id="status">starting...</div></header>
+<button id="install" hidden>Install app</button>
+<form id="add" class="add">
+  <input id="coin" placeholder="Add any coin (e.g. PEPE, ADA, TON)" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" maxlength="12">
+  <button type="submit">Add</button>
+</form>
+<div id="msg"></div>
+<div class="stats">
+  <div class="stat"><span>BUY hit rate</span><b id="hit">-</b></div>
+  <div class="stat"><span>Open signals</span><b id="open">-</b></div>
+</div>
+<div id="list"></div>
+<footer>Keep the app open for live updates. Signal score is a heuristic, not a guaranteed profit chance. Not financial advice.</footer>
+<noscript>This app needs JavaScript.</noscript>
+<script>
+var DEFAULT_COINS=['BTC','ETH','SOL','XRP','DOGE'];
+var GECKO={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',XRP:'ripple',DOGE:'dogecoin'};
+var SOURCES=['Binance','Coinbase','Kraken','KuCoin','Bybit','CoinGecko'];
+var INTERVAL=60, HORIZON=15, MIN_GAIN=0.002, MAXHIST=120, MAXCOINS=12;
+var KEY='cryptobot.v1', KEYC='cryptobot.coins.v1';
+var DEMO=new URLSearchParams(location.search).get('demo')==='1';
+var $=function(id){return document.getElementById(id)};
+
+// ---------- coin list (saved on this phone) ----------
+function loadCoins(){
+  try{var s=JSON.parse(localStorage.getItem(KEYC));
+    if(s&&Array.isArray(s.coins)){Object.assign(GECKO,s.gecko||{});return s.coins}}catch(e){}
+  return DEFAULT_COINS.slice();
+}
+var COINS=loadCoins();
+function saveCoins(){try{localStorage.setItem(KEYC,JSON.stringify({coins:COINS,gecko:GECKO}))}catch(e){}}
+
+// ---------- price sources ----------
+async function getJSON(url){
+  var ctl=new AbortController();var t=setTimeout(function(){ctl.abort()},8000);
+  try{var r=await fetch(url,{signal:ctl.signal,cache:'no-store'});if(!r.ok)throw new Error('http '+r.status);return await r.json();}
+  finally{clearTimeout(t);}
+}
+var F={
+  Binance:async function(c){
+    try{return +(await getJSON('https://data-api.binance.vision/api/v3/ticker/price?symbol='+c+'USDT')).price}
+    catch(e){return +(await getJSON('https://api.binance.com/api/v3/ticker/price?symbol='+c+'USDT')).price}
+  },
+  Coinbase:async function(c){return +(await getJSON('https://api.coinbase.com/v2/prices/'+c+'-USD/spot')).data.amount},
+  Kraken:async function(c){
+    var p=({BTC:'XBTUSD',DOGE:'XDGUSD'})[c]||c+'USD';
+    var d=(await getJSON('https://api.kraken.com/0/public/Ticker?pair='+p)).result;
+    return +Object.values(d)[0].c[0];
+  },
+  KuCoin:async function(c){return +(await getJSON('https://api.kucoin.com/api/v1/market/orderbook/level1?symbol='+c+'-USDT')).data.price},
+  Bybit:async function(c){return +(await getJSON('https://api.bybit.com/v5/market/tickers?category=spot&symbol='+c+'USDT')).result.list[0].lastPrice}
+};
+var demoPx={BTC:90000,ETH:3100,SOL:150,XRP:0.6,DOGE:0.15};
+
+// CoinGecko needs a coin id (not the ticker), so look it up once and remember it.
+async function geckoId(sym){
+  if(GECKO[sym])return GECKO[sym];
+  try{
+    var d=await getJSON('https://api.coingecko.com/api/v3/search?query='+encodeURIComponent(sym));
+    var m=(d.coins||[]).filter(function(x){return String(x.symbol).toUpperCase()===sym});
+    m.sort(function(a,b){return (a.market_cap_rank||1e9)-(b.market_cap_rank||1e9)});
+    if(m.length){GECKO[sym]=m[0].id;saveCoins();return m[0].id}
+  }catch(e){}
+  return null;
+}
+
+async function collectCoins(list){
+  var out={};list.forEach(function(c){out[c]={}});
+  if(DEMO){
+    list.forEach(function(c){
+      demoPx[c]=(demoPx[c]||(1+Math.random()*100))*(1+(Math.random()*0.0085-0.004));
+      SOURCES.forEach(function(s){out[c][s]=demoPx[c]*(1+(Math.random()*0.0012-0.0006))});
+    });
+    return out;
+  }
+  var jobs=[];
+  list.forEach(function(c){
+    Object.keys(F).forEach(function(n){
+      jobs.push(F[n](c).then(function(v){if(isFinite(v)&&v>0)out[c][n]=v}).catch(function(){}));
+    });
+  });
+  var ids=list.filter(function(c){return GECKO[c]}).map(function(c){return GECKO[c]});
+  if(ids.length)jobs.push(getJSON('https://api.coingecko.com/api/v3/simple/price?ids='+ids.join(',')+'&vs_currencies=usd')
+    .then(function(d){list.forEach(function(c){if(!GECKO[c])return;try{var v=+d[GECKO[c]].usd;if(isFinite(v)&&v>0)out[c].CoinGecko=v}catch(e){}})})
+    .catch(function(){}));
+  await Promise.all(jobs);
+  return out;
+}
+
+// ---------- signal logic ----------
+function rsi(p,n){n=n||14;if(p.length<n+1)return null;var g=0,l=0;
+  for(var i=p.length-n;i<p.length;i++){var d=p[i]-p[i-1];if(d>0)g+=d;else l-=d;}
+  if(l===0)return 100;return 100-100/(1+g/l);}
+function ma(p,n){if(p.length<n)return null;var s=0;for(var i=p.length-n;i<p.length;i++)s+=p[i];return s/n;}
+function score(p){
+  var r=rsi(p),m5=ma(p,5),m15=ma(p,15);
+  if(r===null||m15===null)return [null,null];
+  var s=50;
+  s+=m5>m15?15:-15;
+  if(r<30)s+=20;else if(r<45)s+=5;else if(r>70)s-=20;
+  s+=p[p.length-1]>p[p.length-6]?10:-10;
+  return [Math.max(0,Math.min(100,s)),r];
+}
+
+// ---------- state (history + hit rate, saved on this phone) ----------
+function load(){try{var s=JSON.parse(localStorage.getItem(KEY));if(s&&s.h)return s}catch(e){}return {h:{},pending:[],wins:0,total:0}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+var S=load();
+var view=null, busy=false, again=false;
+
+function ingest(c,got,now){
+  var vals=Object.keys(got).map(function(k){return got[k]});
+  var h=S.h[c]||[];
+  if(!vals.length)return {coin:c,price:null,sources:{},n:0,spread:0,score:null,rsi:null,signal:'NO DATA',warm:h.length};
+  var avg=vals.reduce(function(a,b){return a+b},0)/vals.length;
+  if(h.length&&now-h[h.length-1].t>INTERVAL*1000*3)h=[];   // long gap: restart warm-up
+  h.push({t:now,p:avg});h=h.slice(-MAXHIST);S.h[c]=h;
+  var sr=score(h.map(function(x){return x.p})),sc=sr[0],r=sr[1];
+  var spread=(Math.max.apply(null,vals)-Math.min.apply(null,vals))/avg*100;
+  var sig;
+  if(sc===null)sig='WARMING UP';
+  else if(sc>=70){sig='BUY';if(!S.pending.some(function(p){return p.c===c}))S.pending.push({c:c,t:now,e:avg});}
+  else if(sc<=30)sig='AVOID';
+  else sig='WAIT';
+  return {coin:c,price:avg,sources:got,n:vals.length,spread:spread,score:sc,rsi:r,signal:sig,warm:h.length};
+}
+
+async function update(){
+  if(busy){again=true;return}
+  busy=true;
+  try{
+    var list=COINS.slice();
+    var data=await collectCoins(list);var now=Date.now();
+    var coins=[],avgNow={};
+    list.forEach(function(c){
+      if(COINS.indexOf(c)<0)return;                      // removed while fetching
+      var card=ingest(c,data[c],now);coins.push(card);
+      if(card.price!=null)avgNow[c]=card.price;
+    });
+    COINS.forEach(function(c){                           // added while fetching: keep its card
+      if(list.indexOf(c)<0&&view){var old=view.coins.filter(function(x){return x.coin===c})[0];if(old)coins.push(old);}
+    });
+    var keep=[];
+    S.pending.forEach(function(p){
+      var age=now-p.t;
+      if(age>=HORIZON*60000){
+        // only count it if we checked on time (app was open); otherwise drop it unmeasured
+        if(age<=HORIZON*60000*1.5&&avgNow[p.c]!=null){S.total++;if(avgNow[p.c]>=p.e*(1+MIN_GAIN))S.wins++;}
+      }else keep.push(p);
+    });
+    S.pending=keep;
+    view={updated:now,coins:coins};
+    save();render();tick();
+  }finally{busy=false;if(again){again=false;update();}}
+}
+
+// ---------- add / remove coin ----------
+async function addCoin(raw){
+  var s=String(raw||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  var msg=$('msg');
+  if(!s)return;
+  if(COINS.indexOf(s)>=0){msg.textContent=s+' is already added';return}
+  if(COINS.length>=MAXCOINS){msg.textContent='Maximum '+MAXCOINS+' coins. Remove one first.';return}
+  msg.textContent='Checking '+s+' on 6 sites...';
+  var out=await collectCoins([s]);
+  var gid=DEMO?'demo':await geckoId(s);
+  if(!Object.keys(out[s]).length&&!gid){msg.textContent=s+' not found on these sites. Check the ticker (e.g. PEPE, not PEPE/USDT).';return}
+  if(COINS.indexOf(s)>=0)return;
+  COINS.push(s);saveCoins();
+  var now=Date.now();
+  var card=ingest(s,out[s],now);
+  if(!view)view={updated:now,coins:[]};
+  view.coins.push(card);
+  save();render();
+  msg.textContent=s+' added'+(card.n<6?' ('+card.n+'/6 sites list it)':'');
+  $('coin').value='';
+}
+function removeCoin(c){
+  COINS=COINS.filter(function(x){return x!==c});
+  delete S.h[c];
+  S.pending=S.pending.filter(function(p){return p.c!==c});
+  if(view)view.coins=view.coins.filter(function(x){return x.coin!==c});
+  saveCoins();save();render();
+}
+
+// ---------- screen ----------
+function fmt(n){return n==null?'-':(n>=1?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toFixed(n<0.0001?8:5))}
+function render(){
+  if(!view)return;
+  $('hit').textContent=S.total?Math.round(S.wins/S.total*100)+'% ('+S.wins+'/'+S.total+')':'no closed signals yet';
+  $('open').textContent=S.pending.length;
+  if(!view.coins.length){$('list').innerHTML='<div class="card">No coins yet. Type a coin above (e.g. BTC) and press Add.</div>';return}
+  $('list').innerHTML=view.coins.map(function(c){
+    var cls=(c.signal==='WARMING UP'||c.signal==='NO DATA')?'':c.signal;
+    var need=Math.max(0,15-c.warm);
+    var sig=c.signal==='BUY'?'BUY (hold ~'+HORIZON+' min)':c.signal==='WARMING UP'?'Warming up ('+need+' min)':c.signal;
+    var src=SOURCES.map(function(n){var v=c.sources[n];
+      return '<div class="'+(v?'ok':'miss')+'"><span>'+n+'</span><b>'+(v?'$'+fmt(v):'-')+'</b></div>'}).join('');
+    return '<div class="card '+cls+'"><div class="top"><span class="coin">'+c.coin+'</span>'
+      +'<span class="right"><span class="badge '+cls+'">'+sig+'</span><button class="rm" data-rm="'+c.coin+'" aria-label="Remove '+c.coin+'">&#10005;</button></span></div>'
+      +'<div class="price">'+(c.price?'$'+fmt(c.price):'no data')+'</div>'
+      +'<div class="meta"><span>'+c.n+'/6 sources</span><span>spread '+c.spread.toFixed(2)+'%</span>'
+      +(c.score!=null?'<span>score '+c.score+'</span>':'')+(c.rsi!=null?'<span>RSI '+Math.round(c.rsi)+'</span>':'')+'</div>'
+      +'<div class="bar"><i style="width:'+(c.score!=null?c.score:0)+'%"></i></div>'
+      +'<div class="src">'+src+'</div></div>';
+  }).join('');
+}
+function tick(){
+  if(!view){$('status').textContent='fetching first prices...';return;}
+  var ago=Math.round((Date.now()-view.updated)/1000);
+  $('status').innerHTML='updated '+ago+'s ago<br>next in ~'+Math.max(0,INTERVAL-ago)+'s'+(DEMO?' (DEMO DATA)':'');
+}
+
+$('add').onsubmit=function(e){e.preventDefault();addCoin($('coin').value);return false};
+$('list').onclick=function(e){
+  var t=e.target;
+  while(t&&t!==this){if(t.getAttribute&&t.getAttribute('data-rm')){removeCoin(t.getAttribute('data-rm'));return}t=t.parentNode}
+};
+var dip=null;
+addEventListener('beforeinstallprompt',function(e){e.preventDefault();dip=e;$('install').hidden=false});
+addEventListener('appinstalled',function(){$('install').hidden=true});
+$('install').onclick=async function(){if(!dip)return;dip.prompt();try{await dip.userChoice}catch(e){}dip=null;$('install').hidden=true};
+document.addEventListener('visibilitychange',function(){
+  if(!document.hidden&&(!view||Date.now()-view.updated>INTERVAL*1000))update();
+});
+update();
+setInterval(update,INTERVAL*1000);
+setInterval(tick,1000);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(function(){});
+</script></body></html>
